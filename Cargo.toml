@@ -1,0 +1,10 @@
+[package]
+name = "sbvh"
+description = "An implementation of Split Bounding Volume Hierarchies"
+version = "0.1.0"
+edition = "2018"
+authors = ["Maxwell Beck <max@ryt.one>"]
+repository = "https://github.com/rytone/sbvh"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
