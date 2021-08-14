@@ -10,3 +10,9 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 mint = "0.5"
 num-traits = "0.2"
+
+[dev-dependencies]
+obj = "0.10"
+
+[profile.release]
+debug = true
