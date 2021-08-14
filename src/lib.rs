@@ -207,6 +207,13 @@ impl<P: Primitive> Sbvh<P> {
     }
 
     fn build(references: &[Reference<P>]) -> Box<Self> {
+        // Just return a leaf if we only have one reference
+        if references.len() < 2 {
+            return Box::new(Self::Leaf {
+                references: references.to_vec(),
+            });
+        }
+
         // Compute total AABB of all references
         let mut aabb_total = Aabb::zero();
         for reference in references {
@@ -245,50 +252,43 @@ impl<P: Primitive> Sbvh<P> {
                 .unwrap_or(Ordering::Equal)
         });
 
-        // Pick a candidate for an object split if possible
-        if references.len() >= 2 {
-            let (os_sah, os_a, os_b) = (1..references.len())
-                .map(|i| {
-                    let (xa, xb) = x_sorted.split_at(i);
-                    let (ya, yb) = y_sorted.split_at(i);
-                    let (za, zb) = z_sorted.split_at(i);
+        // Pick a candidate for an object split
+        let (os_sah, os_a, os_b) = (1..references.len())
+            .map(|i| {
+                let (xa, xb) = x_sorted.split_at(i);
+                let (ya, yb) = y_sorted.split_at(i);
+                let (za, zb) = z_sorted.split_at(i);
 
-                    let x_sah = surface_area_heuristic(xa, xb, &aabb_total);
-                    let y_sah = surface_area_heuristic(ya, yb, &aabb_total);
-                    let z_sah = surface_area_heuristic(za, zb, &aabb_total);
+                let x_sah = surface_area_heuristic(xa, xb, &aabb_total);
+                let y_sah = surface_area_heuristic(ya, yb, &aabb_total);
+                let z_sah = surface_area_heuristic(za, zb, &aabb_total);
 
-                    if x_sah <= y_sah && x_sah <= z_sah {
-                        (x_sah, xa, xb)
-                    } else if y_sah <= x_sah && y_sah <= z_sah {
-                        (y_sah, ya, yb)
-                    } else {
-                        (z_sah, za, zb)
-                    }
-                })
-                .min_by(|(sah_a, _, _), (sah_b, _, _)| {
-                    sah_a.partial_cmp(sah_b).unwrap_or(Ordering::Equal)
-                })
-                .unwrap();
-
-            // TODO Create spatial split candidate
-
-            // Either use object split or just create a leaf
-            Box::new(if os_sah < NumCast::from(references.len()).unwrap() {
-                Self::Node {
-                    lhs: Self::build(os_a),
-                    rhs: Self::build(os_b),
-                }
-            } else {
-                Self::Leaf {
-                    references: references.to_vec(),
+                if x_sah <= y_sah && x_sah <= z_sah {
+                    (x_sah, xa, xb)
+                } else if y_sah <= x_sah && y_sah <= z_sah {
+                    (y_sah, ya, yb)
+                } else {
+                    (z_sah, za, zb)
                 }
             })
+            .min_by(|(sah_a, _, _), (sah_b, _, _)| {
+                sah_a.partial_cmp(sah_b).unwrap_or(Ordering::Equal)
+            })
+            .unwrap();
+
+        // TODO Create spatial split candidate
+
+        // Either use object split or just create a leaf
+        Box::new(if os_sah < NumCast::from(references.len()).unwrap() {
+            Self::Node {
+                lhs: Self::build(os_a),
+                rhs: Self::build(os_b),
+            }
         } else {
-            // Create leaf if no object split was possible
-            Box::new(Self::Leaf {
+            Self::Leaf {
                 references: references.to_vec(),
-            })
-        }
+            }
+        })
     }
 
     pub fn bounding_box(&self) -> Aabb<P::Num> {
