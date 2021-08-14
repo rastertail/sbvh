@@ -8,3 +8,5 @@ repository = "https://github.com/rytone/sbvh"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+mint = "0.5"
+num-traits = "0.2"
