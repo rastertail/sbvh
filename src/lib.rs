@@ -52,6 +52,33 @@ impl<N: Float + Debug> Aabb<N> {
         Self::new(min, max)
     }
 
+    pub fn from_points(points: &[Point3<N>]) -> Self {
+        let zero: N = Zero::zero();
+
+        let mut min = Point3 {
+            x: zero,
+            y: zero,
+            z: zero,
+        };
+        let mut max = Point3 {
+            x: zero,
+            y: zero,
+            z: zero,
+        };
+
+        for point in points {
+            min.x = min.x.min(point.x);
+            min.y = min.y.min(point.y);
+            min.z = min.z.min(point.z);
+
+            max.x = max.x.max(point.x);
+            max.y = max.y.max(point.y);
+            max.z = max.z.max(point.z);
+        }
+
+        Self::new(min, max)
+    }
+
     pub fn centroid(&self) -> Point3<N> {
         let two: N = NumCast::from(2).unwrap();
 
@@ -95,30 +122,7 @@ pub trait Primitive: Sized {
     fn split(&self, split: Split<Self::Num>) -> (Self, Option<Self>);
 
     fn bounding_box(&self) -> Aabb<Self::Num> {
-        let zero: Self::Num = Zero::zero();
-
-        let mut min = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
-        };
-        let mut max = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
-        };
-
-        for point in self.points() {
-            min.x = min.x.min(point.x);
-            min.y = min.y.min(point.y);
-            min.z = min.z.min(point.z);
-
-            max.x = max.x.max(point.x);
-            max.y = max.y.max(point.y);
-            max.z = max.z.max(point.z);
-        }
-
-        Aabb::new(min, max)
+        Aabb::from_points(self.points())
     }
 }
 

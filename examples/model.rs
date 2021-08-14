@@ -44,29 +44,11 @@ fn main() {
                         });
                     }
 
-                    let mut min: Point3<f32> = Point3 {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    };
-                    let mut max: Point3<f32> = Point3 {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    };
-                    for point in &points {
-                        min.x = min.x.min(point.x);
-                        min.y = min.y.min(point.y);
-                        min.z = min.z.min(point.z);
-
-                        max.x = max.x.max(point.x);
-                        max.y = max.y.max(point.y);
-                        max.z = max.z.max(point.z);
-                    }
+                    let bounding_box = Aabb::from_points(&points);
 
                     Polygon {
                         points,
-                        bounding_box: Aabb::new(min, max),
+                        bounding_box,
                     }
                 })
             })
