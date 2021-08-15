@@ -1,5 +1,6 @@
-use std::time::Instant;
+use std::io::Read;
 
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use mint::Point3;
 use obj::{IndexTuple, ObjData};
 use sbvh::{Aabb, Primitive, Sbvh, Split};
@@ -27,10 +28,9 @@ impl Primitive for Polygon {
     }
 }
 
-fn main() {
-    let start = Instant::now();
-    let obj_data = ObjData::load_buf(&include_bytes!("./subdivided_suzanne.obj")[..]).unwrap();
-    let polygons = obj_data
+fn load_obj<R: Read>(data: R) -> Vec<Polygon> {
+    let obj_data = ObjData::load_buf(data).unwrap();
+    obj_data
         .objects
         .iter()
         .flat_map(|object| {
@@ -55,10 +55,22 @@ fn main() {
                 })
             })
         })
-        .collect::<Vec<_>>();
-    println!("Loaded {} polys in {:?}", polygons.len(), start.elapsed());
-
-    let start = Instant::now();
-    let _sbvh = Sbvh::new(&polygons);
-    println!("Built SBVH in {:?}", start.elapsed());
+        .collect()
 }
+
+fn build(c: &mut Criterion) {
+    let suzanne = load_obj(&include_bytes!("./suzanne.obj")[..]);
+    let subdivided_suzanne = load_obj(&include_bytes!("./subdivided_suzanne.obj")[..]);
+
+    let mut group = c.benchmark_group("build");
+    for model in [suzanne, subdivided_suzanne].iter() {
+        group.bench_with_input(BenchmarkId::new("sbvh", model.len()), model, |b, model| {
+            b.iter(|| Sbvh::new(model));
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, build);
+criterion_main!(benches);
