@@ -137,9 +137,7 @@ pub trait Primitive: Sized + Send + Sync {
     fn points(&self) -> &[Point3<Self::Num>];
     fn split(&self, split: Split<Self::Num>) -> (Self, Option<Self>);
 
-    fn bounding_box(&self) -> Aabb<Self::Num> {
-        Aabb::from_points(self.points())
-    }
+    fn bounding_box(&self) -> &Aabb<Self::Num>;
 }
 
 pub struct Reference<P: Primitive> {
@@ -294,7 +292,7 @@ impl<P: Primitive> Sbvh<P> {
             .enumerate()
             .map(|(i, primitive)| Reference {
                 primitive_idx: i,
-                bounding_box: primitive.bounding_box(),
+                bounding_box: primitive.bounding_box().clone(),
                 _primitive_ty: PhantomData,
             })
             .collect::<Vec<_>>();

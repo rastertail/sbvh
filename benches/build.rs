@@ -19,8 +19,8 @@ impl Primitive for Polygon {
         &self.points
     }
 
-    fn bounding_box(&self) -> Aabb<f32> {
-        self.bounding_box.clone()
+    fn bounding_box(&self) -> &Aabb<f32> {
+        &self.bounding_box
     }
 
     fn split(&self, _split: Split<f32>) -> (Self, Option<Self>) {
