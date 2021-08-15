@@ -1,69 +1,64 @@
 use std::{
-    cmp::Ordering,
     fmt::{self, Debug},
     marker::PhantomData,
 };
 
 use mint::Point3;
-use num_traits::{Float, NumCast, Zero};
+use num_traits::{Float, NumCast};
 
-#[derive(Clone, Debug)]
+// TODO Un-hardcode this someday
+const OBJECT_BUCKETS: usize = 32;
+
+#[derive(Copy, Clone, Debug)]
 pub enum Axis {
     X,
     Y,
     Z,
 }
 
+trait GetAxis {
+    type Num: Float + Debug + Send + Sync;
+    fn axis(&self, axis: Axis) -> Self::Num;
+}
+
+impl<N: Float + Debug + Send + Sync> GetAxis for Point3<N> {
+    type Num = N;
+    fn axis(&self, axis: Axis) -> N {
+        match axis {
+            Axis::X => self.x,
+            Axis::Y => self.y,
+            Axis::Z => self.z,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Split<N: Float + Debug> {
+pub struct Split<N: Float + Debug + Send + Sync> {
     pub axis: Axis,
     pub position: N,
 }
 
 #[derive(Clone, Debug)]
-pub struct Aabb<N: Float + Debug> {
+pub struct Aabb<N: Float + Debug + Send + Sync> {
     min: Point3<N>,
     max: Point3<N>,
 }
 
-impl<N: Float + Debug> Aabb<N> {
+impl<N: Float + Debug + Send + Sync> Aabb<N> {
     pub fn new(min: Point3<N>, max: Point3<N>) -> Self {
-        debug_assert!(min.x <= max.x);
-        debug_assert!(min.y <= max.y);
-        debug_assert!(min.z <= max.z);
-
         Self { min, max }
     }
 
-    pub fn zero() -> Self {
-        let zero: N = Zero::zero();
-
-        let min = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
-        };
-        let max = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
-        };
-
-        Self::new(min, max)
-    }
-
     pub fn from_points(points: &[Point3<N>]) -> Self {
-        let zero: N = Zero::zero();
-
         let mut min = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
+            x: N::max_value(),
+            y: N::max_value(),
+            z: N::max_value(),
         };
         let mut max = Point3 {
-            x: zero,
-            y: zero,
-            z: zero,
+            x: N::min_value(),
+            y: N::min_value(),
+            z: N::min_value(),
         };
 
         for point in points {
@@ -113,10 +108,31 @@ impl<N: Float + Debug> Aabb<N> {
 
         two * xs * ys + two * xs * zs + two * ys * zs
     }
+
+    pub fn extent(&self, axis: Axis) -> N {
+        self.max.axis(axis) - self.min.axis(axis)
+    }
 }
 
-pub trait Primitive: Sized {
-    type Num: Float + Debug;
+impl<N: Float + Debug + Send + Sync> Default for Aabb<N> {
+    fn default() -> Self {
+        Self::new(
+            Point3 {
+                x: N::max_value(),
+                y: N::max_value(),
+                z: N::max_value(),
+            },
+            Point3 {
+                x: N::min_value(),
+                y: N::min_value(),
+                z: N::min_value(),
+            },
+        )
+    }
+}
+
+pub trait Primitive: Sized + Send + Sync {
+    type Num: Float + Debug + Send + Sync;
 
     fn points(&self) -> &[Point3<Self::Num>];
     fn split(&self, split: Split<Self::Num>) -> (Self, Option<Self>);
@@ -153,40 +169,121 @@ impl<P: Primitive> Debug for Reference<P> {
     }
 }
 
-fn surface_area_heuristic<P: Primitive>(
-    a: &[Reference<P>],
-    b: &[Reference<P>],
+#[derive(Clone, Debug)]
+struct ObjectBucket<N: Float + Debug + Send + Sync> {
+    bounding_box: Aabb<N>,
+    count: usize,
+}
+
+impl<N: Float + Debug + Send + Sync> Default for ObjectBucket<N> {
+    fn default() -> Self {
+        Self {
+            bounding_box: Aabb::default(),
+            count: 0,
+        }
+    }
+}
+
+// TODO Tighten total bounding box to only cover centroids
+fn object_split_candidate<P: Primitive>(
+    references: &[Reference<P>],
     aabb_total: &Aabb<P::Num>,
-) -> P::Num {
-    let mut aabb_a = Aabb::zero();
-    let mut aabb_b = Aabb::zero();
+    input: &[usize],
+    split_axis: Axis,
+) -> (P::Num, usize) {
+    let mut buckets: [ObjectBucket<P::Num>; OBJECT_BUCKETS] = Default::default();
+    let extent = aabb_total.extent(split_axis);
 
-    for reference in a {
-        aabb_a = aabb_a.union(&reference.bounding_box);
+    // Place references into buckets
+    for idx in input {
+        let bucket_idx: usize = NumCast::from(
+            ((references[*idx].bounding_box.centroid().axis(split_axis)
+                - aabb_total.min.axis(split_axis))
+                / extent
+                * NumCast::from(OBJECT_BUCKETS).unwrap())
+            .floor(),
+        )
+        .unwrap();
+
+        buckets[bucket_idx].count += 1;
+        buckets[bucket_idx].bounding_box = buckets[bucket_idx]
+            .bounding_box
+            .union(&references[*idx].bounding_box);
     }
 
-    for reference in b {
-        aabb_b = aabb_b.union(&reference.bounding_box);
+    // Compute all split left-hand sides
+    let mut lhs_splits: [(usize, Aabb<P::Num>); OBJECT_BUCKETS - 1] = Default::default();
+    let mut lhs_split = (0usize, Aabb::default());
+    for i in 0..OBJECT_BUCKETS - 1 {
+        lhs_split.0 += buckets[i].count;
+        lhs_split.1 = lhs_split.1.union(&buckets[i].bounding_box);
+        lhs_splits[i] = lhs_split.clone();
     }
 
-    let traverse_cost: P::Num = NumCast::from(0.175).unwrap();
-    let n_a: P::Num = NumCast::from(a.len()).unwrap();
-    let n_b: P::Num = NumCast::from(b.len()).unwrap();
+    // Compute split rhs and find split with minimum SAH
+    let mut rhs_split = (0usize, Aabb::default());
+    let mut min_cost = P::Num::max_value();
+    let mut min_idx = 0usize;
+    for i in (1..OBJECT_BUCKETS).rev() {
+        rhs_split.0 += buckets[i].count;
+        rhs_split.1 = rhs_split.1.union(&buckets[i].bounding_box);
 
-    traverse_cost
-        + (aabb_a.surface_area() / aabb_total.surface_area()) * n_a
-        + (aabb_b.surface_area() / aabb_total.surface_area()) * n_b
+        let lhs_split = &lhs_splits[i - 1];
+
+        let traverse_cost: P::Num = NumCast::from(1).unwrap();
+        let n_lhs: P::Num = NumCast::from(lhs_split.0).unwrap();
+        let n_rhs: P::Num = NumCast::from(rhs_split.0).unwrap();
+        let cost = traverse_cost
+            + (n_lhs * lhs_split.1.surface_area() + n_rhs * rhs_split.1.surface_area())
+                / aabb_total.surface_area();
+
+        if cost < min_cost {
+            min_cost = cost;
+            min_idx = i;
+        }
+    }
+
+    (min_cost, min_idx)
+}
+
+fn object_split<P: Primitive>(
+    references: &[Reference<P>],
+    aabb_total: &Aabb<P::Num>,
+    input: &[usize],
+    output: &mut [usize],
+    split_axis: Axis,
+    bucket_idx: usize,
+) -> usize {
+    let extent = aabb_total.extent(split_axis);
+
+    let mut lhs_ptr = 0usize;
+    let mut rhs_ptr = output.len() - 1;
+    for idx in input {
+        let this_bucket: usize = NumCast::from(
+            ((references[*idx].bounding_box.centroid().axis(split_axis)
+                - aabb_total.min.axis(split_axis))
+                / extent
+                * NumCast::from(OBJECT_BUCKETS).unwrap())
+            .floor(),
+        )
+        .unwrap();
+
+        if this_bucket < bucket_idx {
+            output[lhs_ptr] = *idx;
+            lhs_ptr += 1;
+        } else {
+            output[rhs_ptr] = *idx;
+            rhs_ptr -= 1;
+        }
+    }
+
+    lhs_ptr
 }
 
 #[derive(Clone, Debug)]
 pub enum Sbvh<P: Primitive> {
-    Node {
-        lhs: Box<Self>,
-        rhs: Box<Self>,
-    },
-    Leaf {
-        references: Vec<Reference<P>>, // TODO optimize with tinyvec
-    },
+    Node { lhs: Box<Self>, rhs: Box<Self> },
+    Leaf { references: Vec<Reference<P>> },
 }
 
 impl<P: Primitive> Sbvh<P> {
@@ -202,92 +299,78 @@ impl<P: Primitive> Sbvh<P> {
             })
             .collect::<Vec<_>>();
 
+        // Create double buffers for partitioning
+        let mut buffer_a = Vec::with_capacity(references.len());
+        for i in 0..references.len() {
+            buffer_a.push(i);
+        }
+        let mut buffer_b = vec![0usize; references.len()];
+
         // Perform recursive build
-        Self::build(&references)
+        Self::build(&references, &mut buffer_a, &mut buffer_b)
     }
 
-    fn build(references: &[Reference<P>]) -> Box<Self> {
+    fn build(
+        references: &[Reference<P>],
+        input_buffer: &mut [usize],
+        output_buffer: &mut [usize],
+    ) -> Box<Self> {
         // Just return a leaf if we only have one reference
-        if references.len() < 2 {
-            return Box::new(Self::Leaf {
-                references: references.to_vec(),
-            });
+        if input_buffer.len() < 2 {
+            return Self::create_leaf(references, input_buffer);
         }
 
         // Compute total AABB of all references
-        let mut aabb_total = Aabb::zero();
-        for reference in references {
-            aabb_total = aabb_total.union(&reference.bounding_box);
+        let mut aabb_total = Aabb::default();
+        for idx in input_buffer.iter() {
+            aabb_total = aabb_total.union(&references[*idx].bounding_box);
         }
 
-        // Sort references by their AABB centroids on each axis
-        let mut x_sorted = references.to_vec();
-        let mut y_sorted = references.to_vec();
-        let mut z_sorted = references.to_vec();
-
-        x_sorted.sort_by(|ref_a, ref_b| {
-            ref_a
-                .bounding_box
-                .centroid()
-                .x
-                .partial_cmp(&ref_b.bounding_box.centroid().x)
-                .unwrap_or(Ordering::Equal)
-        });
-
-        y_sorted.sort_by(|ref_a, ref_b| {
-            ref_a
-                .bounding_box
-                .centroid()
-                .y
-                .partial_cmp(&ref_b.bounding_box.centroid().y)
-                .unwrap_or(Ordering::Equal)
-        });
-
-        z_sorted.sort_by(|ref_a, ref_b| {
-            ref_a
-                .bounding_box
-                .centroid()
-                .z
-                .partial_cmp(&ref_b.bounding_box.centroid().z)
-                .unwrap_or(Ordering::Equal)
-        });
-
-        // Pick a candidate for an object split
-        let (os_sah, os_a, os_b) = (1..references.len())
-            .map(|i| {
-                let (xa, xb) = x_sorted.split_at(i);
-                let (ya, yb) = y_sorted.split_at(i);
-                let (za, zb) = z_sorted.split_at(i);
-
-                let x_sah = surface_area_heuristic(xa, xb, &aabb_total);
-                let y_sah = surface_area_heuristic(ya, yb, &aabb_total);
-                let z_sah = surface_area_heuristic(za, zb, &aabb_total);
-
-                if x_sah <= y_sah && x_sah <= z_sah {
-                    (x_sah, xa, xb)
-                } else if y_sah <= x_sah && y_sah <= z_sah {
-                    (y_sah, ya, yb)
-                } else {
-                    (z_sah, za, zb)
-                }
-            })
-            .min_by(|(sah_a, _, _), (sah_b, _, _)| {
-                sah_a.partial_cmp(sah_b).unwrap_or(Ordering::Equal)
-            })
-            .unwrap();
-
-        // TODO Create spatial split candidate
-
-        // Either use object split or just create a leaf
-        Box::new(if os_sah < NumCast::from(references.len()).unwrap() {
-            Self::Node {
-                lhs: Self::build(os_a),
-                rhs: Self::build(os_b),
-            }
+        // Compute split axis based on maximum extent
+        let split_axis = if aabb_total.extent(Axis::X) >= aabb_total.extent(Axis::Y)
+            && aabb_total.extent(Axis::X) >= aabb_total.extent(Axis::Z)
+        {
+            Axis::X
+        } else if aabb_total.extent(Axis::Y) >= aabb_total.extent(Axis::Z) {
+            Axis::Y
         } else {
-            Self::Leaf {
-                references: references.to_vec(),
-            }
+            Axis::Z
+        };
+
+        // Compute leaf cost
+        let leaf_cost: P::Num = NumCast::from(input_buffer.len()).unwrap();
+
+        // Try object split
+        let (object_split_cost, object_split_bucket) =
+            object_split_candidate(references, &aabb_total, input_buffer, split_axis);
+
+        if object_split_cost < leaf_cost {
+            let split_point = object_split(
+                references,
+                &aabb_total,
+                input_buffer,
+                output_buffer,
+                split_axis,
+                object_split_bucket,
+            );
+
+            let (a_in, b_in) = output_buffer.split_at_mut(split_point);
+            let (a_out, b_out) = input_buffer.split_at_mut(split_point);
+
+            let (lhs, rhs) = rayon::join(
+                || Self::build(references, a_in, a_out),
+                || Self::build(references, b_in, b_out),
+            );
+
+            Box::new(Self::Node { lhs, rhs })
+        } else {
+            Self::create_leaf(references, input_buffer)
+        }
+    }
+
+    fn create_leaf(references: &[Reference<P>], indices: &[usize]) -> Box<Self> {
+        Box::new(Self::Leaf {
+            references: indices.iter().map(|idx| references[*idx].clone()).collect(),
         })
     }
 
@@ -295,7 +378,7 @@ impl<P: Primitive> Sbvh<P> {
         match self {
             Sbvh::Node { lhs, rhs } => lhs.bounding_box().union(&rhs.bounding_box()),
             Sbvh::Leaf { references } => {
-                let mut aabb = Aabb::zero();
+                let mut aabb = Aabb::default();
                 for reference in references {
                     aabb = aabb.union(&reference.bounding_box)
                 }

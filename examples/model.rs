@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use mint::Point3;
 use obj::{IndexTuple, ObjData};
 use sbvh::{Aabb, Primitive, Sbvh, Split};
@@ -26,7 +28,7 @@ impl Primitive for Polygon {
 }
 
 fn main() {
-    println!("Loading model...");
+    let start = Instant::now();
     let obj_data = ObjData::load_buf(&include_bytes!("./subdivided_suzanne.obj")[..]).unwrap();
     let polygons = obj_data
         .objects
@@ -54,7 +56,9 @@ fn main() {
             })
         })
         .collect::<Vec<_>>();
+    println!("Loaded {} polys in {:?}", polygons.len(), start.elapsed());
 
-    println!("Building SBVH...");
+    let start = Instant::now();
     let _sbvh = Sbvh::new(&polygons);
+    println!("Built SBVH in {:?}", start.elapsed());
 }
