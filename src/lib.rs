@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Debug},
     marker::PhantomData,
     mem::MaybeUninit,
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -48,6 +49,15 @@ impl<T> AtomicArena<T> {
     }
 }
 
+// TODO Figure out how to drop everything at once
+impl<T> Drop for AtomicArena<T> {
+    fn drop(&mut self) {
+        for i in 0..self.len.load(Ordering::SeqCst) {
+            unsafe { ptr::drop_in_place(self.storage.get_mut()[i].as_mut_ptr()) }
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum Axis {
     X,
@@ -79,8 +89,8 @@ pub struct Split<N: Float + Debug + Send + Sync> {
 
 #[derive(Clone, Debug)]
 pub struct Aabb<N: Float + Debug + Send + Sync> {
-    min: Point3<N>,
-    max: Point3<N>,
+    pub min: Point3<N>,
+    pub max: Point3<N>,
 }
 
 impl<N: Float + Debug + Send + Sync> Aabb<N> {
