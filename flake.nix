@@ -13,7 +13,7 @@
       in {
         devShell = pkgs.mkShell {
           buildInputs = let
-            rust = pkgs.rust-bin.stable.latest.default; 
+            rust = pkgs.rust-bin.nightly.latest.default; 
           in [
             (rust.override { extensions = [ "rust-src" ]; }) pkgs.linuxPackages.perf
           ];

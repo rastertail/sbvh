@@ -1,6 +1,11 @@
+#![feature(new_uninit)]
+
 use std::{
+    cell::UnsafeCell,
     fmt::{self, Debug},
     marker::PhantomData,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use mint::Point3;
@@ -8,6 +13,40 @@ use num_traits::{Float, NumCast};
 
 // TODO Un-hardcode this someday
 const OBJECT_BUCKETS: usize = 32;
+
+#[derive(Debug)]
+struct AtomicArena<T> {
+    storage: UnsafeCell<Box<[MaybeUninit<T>]>>,
+    len: AtomicUsize,
+}
+
+unsafe impl<T: Send> Send for AtomicArena<T> {}
+unsafe impl<T: Sync> Sync for AtomicArena<T> {}
+
+impl<T> AtomicArena<T> {
+    fn new(size: usize) -> Self {
+        Self {
+            storage: UnsafeCell::new(Box::new_uninit_slice(size)),
+            len: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, v: T) -> usize {
+        let idx = self.len.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            (&mut *self.storage.get())[idx] = MaybeUninit::new(v);
+        }
+        idx
+    }
+
+    fn get(&self, i: usize) -> Option<&T> {
+        if i < self.len.load(Ordering::SeqCst) {
+            unsafe { Some((&*self.storage.get())[i].assume_init_ref()) }
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum Axis {
@@ -278,14 +317,20 @@ fn object_split<P: Primitive>(
     lhs_ptr
 }
 
-#[derive(Clone, Debug)]
-pub enum Sbvh<P: Primitive> {
-    Node { lhs: Box<Self>, rhs: Box<Self> },
+#[derive(Debug)]
+pub enum SbvhNode<P: Primitive> {
+    Node { lhs: usize, rhs: usize },
     Leaf { references: Vec<Reference<P>> },
 }
 
+#[derive(Debug)]
+pub struct Sbvh<P: Primitive> {
+    nodes: AtomicArena<SbvhNode<P>>,
+    root_node: usize,
+}
+
 impl<P: Primitive> Sbvh<P> {
-    pub fn new(primitives: &[P]) -> Box<Self> {
+    pub fn new(primitives: &[P]) -> Self {
         // Construct initial references
         let references = primitives
             .iter()
@@ -304,18 +349,27 @@ impl<P: Primitive> Sbvh<P> {
         }
         let mut buffer_b = vec![0usize; references.len()];
 
+        // Create output arena
+        let output_arena = AtomicArena::new(2 * references.len() - 1);
+
         // Perform recursive build
-        Self::build(&references, &mut buffer_a, &mut buffer_b)
+        let root_node = Self::build(&references, &mut buffer_a, &mut buffer_b, &output_arena);
+
+        Self {
+            nodes: output_arena,
+            root_node,
+        }
     }
 
     fn build(
         references: &[Reference<P>],
         input_buffer: &mut [usize],
         output_buffer: &mut [usize],
-    ) -> Box<Self> {
+        output_arena: &AtomicArena<SbvhNode<P>>,
+    ) -> usize {
         // Just return a leaf if we only have one reference
         if input_buffer.len() < 2 {
-            return Self::create_leaf(references, input_buffer);
+            return Self::create_leaf(references, input_buffer, output_arena);
         }
 
         // Compute total AABB of all references
@@ -356,26 +410,33 @@ impl<P: Primitive> Sbvh<P> {
             let (a_out, b_out) = input_buffer.split_at_mut(split_point);
 
             let (lhs, rhs) = rayon::join(
-                || Self::build(references, a_in, a_out),
-                || Self::build(references, b_in, b_out),
+                || Self::build(references, a_in, a_out, output_arena),
+                || Self::build(references, b_in, b_out, output_arena),
             );
 
-            Box::new(Self::Node { lhs, rhs })
+            output_arena.push(SbvhNode::Node { lhs, rhs })
         } else {
-            Self::create_leaf(references, input_buffer)
+            Self::create_leaf(references, input_buffer, output_arena)
         }
     }
 
-    fn create_leaf(references: &[Reference<P>], indices: &[usize]) -> Box<Self> {
-        Box::new(Self::Leaf {
+    fn create_leaf(
+        references: &[Reference<P>],
+        indices: &[usize],
+        output_arena: &AtomicArena<SbvhNode<P>>,
+    ) -> usize {
+        output_arena.push(SbvhNode::Leaf {
             references: indices.iter().map(|idx| references[*idx].clone()).collect(),
         })
     }
 
-    pub fn bounding_box(&self) -> Aabb<P::Num> {
-        match self {
-            Sbvh::Node { lhs, rhs } => lhs.bounding_box().union(&rhs.bounding_box()),
-            Sbvh::Leaf { references } => {
+    fn node_bounding_box(&self, idx: usize) -> Aabb<P::Num> {
+        let node = self.nodes.get(idx).unwrap();
+        match node {
+            SbvhNode::Node { lhs, rhs } => self
+                .node_bounding_box(*lhs)
+                .union(&self.node_bounding_box(*rhs)),
+            SbvhNode::Leaf { references } => {
                 let mut aabb = Aabb::default();
                 for reference in references {
                     aabb = aabb.union(&reference.bounding_box)
@@ -383,5 +444,9 @@ impl<P: Primitive> Sbvh<P> {
                 aabb
             }
         }
+    }
+
+    pub fn bounding_box(&self) -> Aabb<P::Num> {
+        self.node_bounding_box(self.root_node)
     }
 }
