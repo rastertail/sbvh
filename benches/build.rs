@@ -1,30 +1,50 @@
-use std::io::Read;
+use std::{io::Read, time::Duration};
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use bvh::bvh::BVH;
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use mint::Point3;
 use obj::{IndexTuple, ObjData};
-use sbvh::{Aabb, Primitive, Sbvh, Split};
+use sbvh::Sbvh;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Polygon {
     points: Vec<Point3<f32>>,
 
-    bounding_box: Aabb<f32>,
+    sbvh_bounding_box: sbvh::Aabb<f32>,
+
+    bvh_bounding_box: bvh::aabb::AABB,
+    bvh_node_idx: usize,
 }
 
-impl Primitive for Polygon {
+impl sbvh::Primitive for Polygon {
     type Num = f32;
 
     fn points(&self) -> &[Point3<f32>] {
         &self.points
     }
 
-    fn bounding_box(&self) -> &Aabb<f32> {
-        &self.bounding_box
+    fn bounding_box(&self) -> &sbvh::Aabb<f32> {
+        &self.sbvh_bounding_box
     }
 
-    fn split(&self, _split: Split<f32>) -> (Self, Option<Self>) {
+    fn split(&self, _split: sbvh::Split<f32>) -> (Self, Option<Self>) {
         unimplemented!();
+    }
+}
+
+impl bvh::aabb::Bounded for Polygon {
+    fn aabb(&self) -> bvh::aabb::AABB {
+        self.bvh_bounding_box
+    }
+}
+
+impl bvh::bounding_hierarchy::BHShape for Polygon {
+    fn set_bh_node_index(&mut self, i: usize) {
+        self.bvh_node_idx = i;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.bvh_node_idx
     }
 }
 
@@ -46,11 +66,26 @@ fn load_obj<R: Read>(data: R) -> Vec<Polygon> {
                         });
                     }
 
-                    let bounding_box = Aabb::from_points(&points);
+                    let sbvh_bounding_box = sbvh::Aabb::from_points(&points);
+
+                    let bvh_bounding_box = bvh::aabb::AABB::with_bounds(
+                        bvh::Vector3::new(
+                            sbvh_bounding_box.min.x,
+                            sbvh_bounding_box.min.y,
+                            sbvh_bounding_box.min.z,
+                        ),
+                        bvh::Vector3::new(
+                            sbvh_bounding_box.max.x,
+                            sbvh_bounding_box.max.y,
+                            sbvh_bounding_box.max.z,
+                        ),
+                    );
 
                     Polygon {
                         points,
-                        bounding_box,
+                        sbvh_bounding_box,
+                        bvh_bounding_box,
+                        bvh_node_idx: 0,
                     }
                 })
             })
@@ -67,10 +102,22 @@ fn build(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("sbvh", model.len()), model, |b, model| {
             b.iter(|| Sbvh::new(model));
         });
+        group.bench_with_input(BenchmarkId::new("bvh", model.len()), model, |b, model| {
+            b.iter_batched(
+                move || model.clone(),
+                |mut model| BVH::build(&mut model),
+                BatchSize::LargeInput,
+            );
+        });
     }
 
     group.finish();
 }
 
-criterion_group!(benches, build);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().sample_size(500).measurement_time(Duration::from_secs(60));
+    targets = build
+}
+
 criterion_main!(benches);
