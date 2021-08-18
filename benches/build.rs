@@ -10,24 +10,22 @@ use sbvh::Sbvh;
 struct Polygon {
     points: Vec<Point3<f32>>,
 
-    sbvh_bounding_box: sbvh::Aabb<f32>,
+    sbvh_bounding_box: sbvh::Aabb,
 
     bvh_bounding_box: bvh::aabb::AABB,
     bvh_node_idx: usize,
 }
 
 impl sbvh::Primitive for Polygon {
-    type Num = f32;
-
     fn points(&self) -> &[Point3<f32>] {
         &self.points
     }
 
-    fn bounding_box(&self) -> &sbvh::Aabb<f32> {
+    fn bounding_box(&self) -> &sbvh::Aabb {
         &self.sbvh_bounding_box
     }
 
-    fn split(&self, _split: sbvh::Split<f32>) -> (Self, Option<Self>) {
+    fn split(&self, _split: sbvh::Split) -> (Self, Option<Self>) {
         unimplemented!();
     }
 }
@@ -116,7 +114,7 @@ fn build(c: &mut Criterion) {
 
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(500).measurement_time(Duration::from_secs(60));
+    config = Criterion::default().sample_size(50).measurement_time(Duration::from_secs(10));
     targets = build
 }
 
