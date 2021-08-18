@@ -8,13 +8,17 @@ repository = "https://github.com/rytone/sbvh"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+cfg-if = "1"
 mint = "0.5"
-rayon = "1.5"
+rayon = { version = "1.5", optional = true }
 
 [dev-dependencies]
 bvh = "0.5"
 criterion = "0.3"
 obj = "0.10"
+
+[features]
+default = ["rayon"]
 
 [[bench]]
 name = "build"

@@ -396,10 +396,21 @@ impl Sbvh {
             let (a_in, b_in) = output_buffer.split_at_mut(split_point);
             let (a_out, b_out) = input_buffer.split_at_mut(split_point);
 
-            let (lhs, rhs) = rayon::join(
-                || Self::build(references, a_in, a_out, output_arena),
-                || Self::build(references, b_in, b_out, output_arena),
-            );
+            let (lhs, rhs) = {
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "rayon")] {
+                        rayon::join(
+                            || Self::build(references, a_in, a_out, output_arena),
+                            || Self::build(references, b_in, b_out, output_arena),
+                        )
+                    } else {
+                        (
+                            Self::build(references, a_in, a_out, output_arena),
+                            Self::build(references, b_in, b_out, output_arena),
+                        )
+                    }
+                }
+            };
 
             output_arena.push(SbvhNode::Node { lhs, rhs })
         } else {
